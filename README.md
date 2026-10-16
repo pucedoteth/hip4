@@ -33,9 +33,9 @@ await hip4.initialize();
 
 - [`auth-eoa.ts`](examples/auth-eoa.ts) - Agent key approval and auth setup
 - [`get-all-markets.ts`](examples/get-all-markets.ts) - Fetch all markets grouped by type
-- [`wc-liq-rewards-s1-get-markets.ts`](examples/wc-liq-rewards-s1-get-markets.ts) - Liquidity-reward eligibility and wallet scores for season 1 (World Cup 2026)
 - [`get-multi-outcome.ts`](examples/get-multi-outcome.ts) - Multi-outcome markets with live prices
 - [`get-recurring-markets.ts`](examples/get-recurring-markets.ts) - Recurring markets with expiry countdowns
+- [`outcome-rewards-get-programme.ts`](examples/outcome-rewards-get-programme.ts) - Programme totals, a wallet's earnings, reward periods, and the leaderboard
 - [`place-limit-order.ts`](examples/place-limit-order.ts) - Limit order with price validation
 - [`place-market-order.ts`](examples/place-market-order.ts) - Market order with FrontendMarket TIF
 - [`stream-prices.ts`](examples/stream-prices.ts) - Stream live prices via WebSocket
@@ -43,6 +43,8 @@ await hip4.initialize();
 - [`deployer-status.ts`](examples/deployer-status.ts) - Read a deployer's chain state and onboarding checklist (experimental)
 - [`deploy-and-settle.ts`](examples/deploy-and-settle.ts) - Register and settle a market as an approved agent (experimental)
 - [`multisig-approve-agent.ts`](examples/multisig-approve-agent.ts) - Approve an agent through a 2-of-3 multi-sig master (experimental)
+- [`web-showcase/`](examples/web-showcase) - Web page that lists Outcome markets by category and links to outcome.xyz
+- [`web-trading/`](examples/web-trading) - Web page with order book, wallet approvals and trading
 
 ## API
 
@@ -123,10 +125,12 @@ await hip4.initialize();
 | `setSigner(signer)`                          | -        | Agent key, or a leader for multi-sig      |
 | `fetchTemplates()`                           | -        | Live `outcomeTemplates` registry          |
 | `fetchSnapshot(master)`                      | -        | Venue, stake, agents, multi-sig, limits   |
-| `registerStandaloneOutcome(params)`          | L1 agent | Deploy a two-sided market from a template |
-| `registerQuestion(params)`                   | L1 agent | Deploy a question and its named outcomes  |
-| `settleOutcome({ outcomeId, settleFraction })` | L1 agent | Settle a standalone outcome             |
+| `registerStandaloneOutcome({ venue, ... })`  | L1 agent | Deploy a two-sided market from a template |
+| `registerQuestion({ venue, ... })`           | L1 agent | Deploy a question and its named outcomes  |
+| `registerAndAssociateNamedOutcome({ venue, question, namedOutcome })` | L1 agent | Add a named outcome to a live question |
+| `settleOutcome({ outcomeId, settleFraction })` | L1 agent | Settle one outcome (venue read from meta) |
 | `settleQuestion({ questionId, winner })`     | L1 agent | Settle every unsettled named outcome      |
+| `setSubDeployers({ venue, entries })`        | L1 agent | Grant or revoke sub-deployer variants     |
 | `activate(venueName)` / `deactivate()`       | L1 agent | Claim a venue (one-way door)              |
 | `approveAgent({ agentAddress, agentName })`  | EIP-712  | Approve an API wallet                     |
 | `convertToMultiSigUser(params)`              | EIP-712  | Convert the master to native multi-sig    |
@@ -169,11 +173,18 @@ const hip4 = createHIP4Adapter({
   // Builder fee - collected on every order placed by this adapter
   builderAddress: "0xYourBuilderAddress",
   builderFee: 100, // 0.1% (tenths of a basis point, 0-1000)
+  // Client-side order-notional floor in USD, checked before submission. Must
+  // be >= the protocol MIN_NOTIONAL; defaults to MIN_NOTIONAL if omitted.
+  minOrderNotional: 10,
   logger: (level, msg, data) => console.log(level, msg, data),
 });
 ```
 
 Per-order builder address/fee can also be passed on `placeOrder` to override the adapter-level config.
+
+`minOrderNotional` can only raise the effective floor above the protocol minimum, never lower it - the
+constructor throws if you pass a value below `MIN_NOTIONAL`. Pass `skipMinNotionalCheck: true` on an
+individual `placeOrder` call to bypass this floor (and the protocol one) entirely.
 
 ## Streams
 
@@ -198,23 +209,23 @@ unsub();
 | `createPerpPriceFeed(client, coin, onSnapshot, opts?)`     | Same shape for an HL perp coin                                     |
 | `processTick`, `candleBoundaryMs`, `intervalToMs`          | Lower-level candle utilities                                       |
 
-## Liquidity rewards
+## Outcome rewards
 
-Check which markets are eligible for liquidity rewards and what each wallet
-has earned, by season (`s1` = the World Cup 2026 campaign). Endpoints and
-season mappings are configured in code (`LIQUIDITY_REWARDS_CONFIG`).
+What the Outcome Markets liquidity-rewards programme has paid: programme
+totals, one wallet's earnings, reward periods, and a leaderboard. Public,
+no auth. Endpoint is configured in code (`OUTCOME_REWARDS_CONFIG`).
 
 ```typescript
-import { liquidityRewards } from "@outcome.xyz/hip4";
+import { outcomeRewards } from "@outcome.xyz/hip4";
 
-const s1 = liquidityRewards.season("s1");
-
-const teams = await s1.checkEligibility({ subject: "teams" });
-const matches = await s1.checkEligibility({ subject: "matches" });
-const rewards = await s1.checkRewards({ wallet: "0x...", date: "2026-06-08" });
+const totals = await outcomeRewards.programme();
+const mine = await outcomeRewards.wallet("0x...");
+const periods = await outcomeRewards.periods({ limit: 50 });
+const board = await outcomeRewards.leaderboard({ limit: 10 });
 ```
 
-Reward mechanics: [World Cup Outcome Rewards](https://docs.monarch.fast/world-cup-outcome-rewards#reward-program-1-champion-market) - Upstream API: [World Cup API](https://docs.monarch.fast/world-cup-api)
+See [docs/OUTCOME-REWARDS.md](docs/OUTCOME-REWARDS.md) for the paid /
+pending / awarded distinction and full field reference.
 
 ## Deployer (experimental)
 
@@ -231,7 +242,7 @@ const snapshot = await adapter.deployer.fetchSnapshot(master);
 
 // Deploy and settle, signed by an approved agent that holds no funds
 adapter.deployer.setSigner(agentSigner);
-await adapter.deployer.registerStandaloneOutcome({ templateId: "binaryPrice4", values });
+await adapter.deployer.registerStandaloneOutcome({ venue: "zzz", templateId: "binaryPrice4", values });
 await adapter.deployer.settleOutcome({ outcomeId, settleFraction: "1" });
 ```
 

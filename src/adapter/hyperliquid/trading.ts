@@ -15,7 +15,6 @@ import {
   mul,
   sub,
   toDecimal,
-  toNum,
 } from "../../lib/precision/primitives";
 import type {
   PredictionBatchOrderResult,
@@ -28,7 +27,7 @@ import type { PredictionTradingAdapter, WalletActionResult } from "../types";
 import type { HIP4Auth } from "./auth";
 import type { HIP4Client } from "./client";
 import { sideAssetId } from "./client";
-import { formatPrice, getMinShares, MIN_NOTIONAL, stripZeros } from "./pricing";
+import { formatOutcomePrice, getMinShares, MIN_NOTIONAL, stripZeros } from "./pricing";
 import {
   signL1Action,
   sortCancelAction,
@@ -183,6 +182,16 @@ function interpretStatus(
   return { status: "unknown" };
 }
 
+/**
+ * A rejected request's result. On `status: "err"` Hyperliquid returns its
+ * message as a plain string in `response`, kept in `raw`.
+ */
+function exchangeError(res: { response?: unknown }): PredictionOrderResult {
+  return typeof res.response === "string" && res.response.length > 0
+    ? { success: false, error: "Exchange returned non-ok status", raw: res.response }
+    : { success: false, error: "Exchange returned non-ok status" };
+}
+
 // ---------------------------------------------------------------------------
 // HIP4TradingAdapter
 // ---------------------------------------------------------------------------
@@ -190,11 +199,19 @@ function interpretStatus(
 export interface TradingAdapterConfig {
   builderAddress?: string;
   builderFee?: number;
+  /**
+   * Client-side order-notional floor in USD, checked before submission.
+   * Must be >= MIN_NOTIONAL (the real Hyperliquid protocol minimum); use
+   * this to apply a stricter, business-chosen floor on top of it.
+   * Default: MIN_NOTIONAL.
+   */
+  minOrderNotional?: number;
 }
 
 export class HIP4TradingAdapter implements PredictionTradingAdapter {
   private readonly builderAddress?: string;
   private readonly builderFee?: number;
+  private readonly _minOrderNotional: number;
 
   constructor(
     private readonly client: HIP4Client,
@@ -203,6 +220,17 @@ export class HIP4TradingAdapter implements PredictionTradingAdapter {
   ) {
     this.builderAddress = config?.builderAddress;
     this.builderFee = config?.builderFee;
+    this._minOrderNotional = config?.minOrderNotional ?? MIN_NOTIONAL;
+    if (!Number.isFinite(this._minOrderNotional) || this._minOrderNotional < MIN_NOTIONAL) {
+      throw new Error(
+        `minOrderNotional (${this._minOrderNotional}) must be a finite number >= the protocol MIN_NOTIONAL (${MIN_NOTIONAL})`,
+      );
+    }
+  }
+
+  /** Effective client-side order-notional floor: MIN_NOTIONAL unless raised by config. */
+  get minOrderNotional(): number {
+    return this._minOrderNotional;
   }
 
   private buildOrderWire(
@@ -221,14 +249,13 @@ export class HIP4TradingAdapter implements PredictionTradingAdapter {
         `Market order: side=${isBuy ? "buy" : "sell"}, price=${price} (FrontendMarket best-execution)`,
       );
     } else {
-      const rawPrice = toNum(toDecimal(params.price ?? "0"));
-      price = formatPrice(rawPrice);
+      price = formatOutcomePrice(params.price ?? "0");
       this.client.log("debug", `Limit order: price=${price}`);
 
       const numericSize = toDecimal(amount);
 
       if (params.markPx !== undefined && !params.skipMinNotionalCheck) {
-        const minShares = getMinShares(params.markPx);
+        const minShares = getMinShares(params.markPx, this._minOrderNotional);
         if (numericSize.lt(minShares)) {
           return {
             error: `Size ${numericSize} below minimum ${minShares} shares (markPx=${params.markPx})`,
@@ -250,10 +277,10 @@ export class HIP4TradingAdapter implements PredictionTradingAdapter {
 
       if (
         !params.skipMinNotionalCheck &&
-        lt(effectiveNotional, String(MIN_NOTIONAL))
+        lt(effectiveNotional, String(this._minOrderNotional))
       ) {
         return {
-          error: `Notional $${fixed(effectiveNotional, 2)} below minimum $${MIN_NOTIONAL}`,
+          error: `Notional $${fixed(effectiveNotional, 2)} below minimum $${this._minOrderNotional}`,
         };
       }
     }
@@ -325,7 +352,7 @@ export class HIP4TradingAdapter implements PredictionTradingAdapter {
       );
 
       if (res.status !== "ok" || !res.response) {
-        return { success: false, error: "Exchange returned non-ok status" };
+        return exchangeError(res);
       }
 
       const firstStatus = res.response.data.statuses[0];
@@ -416,11 +443,9 @@ export class HIP4TradingAdapter implements PredictionTradingAdapter {
       );
 
       if (res.status !== "ok" || !res.response) {
+        const rejected = exchangeError(res);
         for (const idx of wireToInputIndex) {
-          results[idx] = {
-            success: false,
-            error: "Exchange returned non-ok status",
-          };
+          results[idx] = { ...rejected };
         }
         return { success: false, results };
       }

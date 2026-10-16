@@ -42,6 +42,7 @@ export {
 } from "./hyperliquid/market-discovery";
 export {
   computeTickSize,
+  formatOutcomePrice,
   formatPrice,
   getMinShares,
   MIN_NOTIONAL,
@@ -53,6 +54,7 @@ export type {
   MergeQuestionParams,
   NegateOutcomeParams,
   SplitOutcomeParams,
+  TradingAdapterConfig,
 } from "./hyperliquid/trading";
 export {
   formatPredictionPrice,

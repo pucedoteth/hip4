@@ -24,10 +24,17 @@ import type {
 import type { PredictionEventAdapter, Unsubscribe } from "../types";
 import type { HIP4Client } from "./client";
 import { sideCoin, withQuoteTokenDefault } from "./client";
+import { readDeployedOutcome } from "../../deployer/keywords";
 import { classifyAllOutcomes } from "./market-classification";
+import {
+  declaredKeywordsOf,
+  renderOutcomeDisplay,
+  renderTemplateDisplay,
+} from "./template-display";
 import type {
   HLOutcome,
   HLOutcomeMeta,
+  HLOutcomeTemplate,
   HLQuestion,
   HLWsOutcomeMetaUpdate,
   HLWsOutcomeMetaUpdates,
@@ -90,21 +97,26 @@ function recurringDescription(outcome: HLOutcome): string {
 function mapOutcomeToMarket(
   outcome: HLOutcome,
   eventId: string,
+  templates: readonly HLOutcomeTemplate[],
+  isFallback = false,
 ): PredictionMarket {
+  const display = renderOutcomeDisplay(outcome, templates, isFallback);
   const outcomes: PredictionOutcome[] = outcome.sideSpecs.map(
     (spec, sideIndex) => ({
       name: spec.name,
+      parsedName:
+        (display.sideNames as readonly string[])[sideIndex] ?? spec.name,
       tokenId: sideCoin(outcome.outcome, sideIndex),
       price: "0",
     }),
   );
+  const recurring = isRecurring(outcome) ? recurringDescription(outcome) : null;
 
   return {
     id: String(outcome.outcome),
     eventId,
-    question: isRecurring(outcome)
-      ? recurringDescription(outcome)
-      : outcome.name,
+    question: recurring ?? outcome.name,
+    parsedQuestion: recurring ?? display.name,
     outcomes,
     volume: "0",
     liquidity: "0",
@@ -114,6 +126,7 @@ function mapOutcomeToMarket(
 function mapQuestionToEvent(
   question: HLQuestion,
   outcomeMap: Map<number, HLOutcome>,
+  templates: readonly HLOutcomeTemplate[],
 ): PredictionEvent {
   const eventId = `q${question.question}`;
   const allOutcomeIds = [
@@ -123,7 +136,9 @@ function mapQuestionToEvent(
 
   const markets = allOutcomeIds
     .map((id) => outcomeMap.get(id)!)
-    .map((o) => mapOutcomeToMarket(o, eventId));
+    .map((o) =>
+      mapOutcomeToMarket(o, eventId, templates, o.outcome === question.fallbackOutcome),
+    );
 
   const settled = new Set(question.settledNamedOutcomes);
   const hasUnsettled = question.namedOutcomes.some((id) => !settled.has(id));
@@ -131,6 +146,7 @@ function mapQuestionToEvent(
   return {
     id: eventId,
     title: question.name,
+    parsedTitle: renderTemplateDisplay(question, templates).name,
     description: question.description,
     category: "custom",
     markets,
@@ -140,18 +156,24 @@ function mapQuestionToEvent(
   };
 }
 
-function mapStandaloneOutcomeToEvent(outcome: HLOutcome): PredictionEvent {
+function mapStandaloneOutcomeToEvent(
+  outcome: HLOutcome,
+  templates: readonly HLOutcomeTemplate[],
+): PredictionEvent {
   const eventId = `o${outcome.outcome}`;
   const recurring = isRecurring(outcome);
 
   return {
     id: eventId,
     title: recurring ? recurringTitle(outcome) : outcome.name,
+    parsedTitle: recurring
+      ? recurringTitle(outcome)
+      : renderTemplateDisplay(outcome, templates).name,
     description: recurring
       ? recurringDescription(outcome)
       : outcome.description,
     category: recurring ? "recurring" : "custom",
-    markets: [mapOutcomeToMarket(outcome, eventId)],
+    markets: [mapOutcomeToMarket(outcome, eventId, templates)],
     totalVolume: "0",
     endDate: recurring
       ? (parseRecurringDescription(outcome.description)?.expiry ?? "")
@@ -180,9 +202,20 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
     timestamp: number;
   } | null = null;
   private static readonly CACHE_TTL_MS = 30_000;
+  private templatesCache: {
+    templates: HLOutcomeTemplate[];
+    timestamp: number;
+  } | null = null;
 
-  /** Side names from outcomeMeta. Populated once, never cleared (sideSpecs don't change). */
+  private templatesInflight: Promise<HLOutcomeTemplate[]> | null = null;
+
+  /**
+   * Side names from outcomeMeta, as sent and rendered. Built on first use and
+   * rebuilt on every market or event cache refresh, so the rendered names
+   * follow the template registry.
+   */
   private sideNames: Map<number, [string, string]> | null = null;
+  private parsedSideNames: Map<number, [string, string]> | null = null;
 
   constructor(private readonly client: HIP4Client) {}
 
@@ -191,11 +224,22 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
     return (outcomeId: number) => this.sideNames?.get(outcomeId) ?? null;
   }
 
+  /**
+   * Like `getSideNameResolver`, with template side names rendered from the
+   * `outcomeTemplates` registry ("template:Yes" reads "Yes").
+   */
+  getParsedSideNameResolver(): SideNameResolver {
+    return (outcomeId: number) => this.parsedSideNames?.get(outcomeId) ?? null;
+  }
+
   /** Ensure sideNames are loaded. Call before using the resolver if data may not be cached yet. */
   async ensureSideNames(): Promise<void> {
     if (this.sideNames) return;
-    const meta = await this.client.fetchOutcomeMeta();
-    this.populateSideNames(meta);
+    const [meta, templates] = await Promise.all([
+      this.client.fetchOutcomeMeta(),
+      this.loadTemplates(),
+    ]);
+    this.populateSideNames(meta, templates);
   }
 
   /**
@@ -233,14 +277,19 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
   private applyMetaUpdate(update: HLWsOutcomeMetaUpdate): void {
     if ("outcomeCreated" in update) {
       const spec = update.outcomeCreated;
-      // Grow sideNames in place so callers using getSideNameResolver pick
-      // up the new outcome immediately. populateSideNames is gated on
-      // `!sideNames` and won't overwrite existing entries.
+      // Grow the side name maps in place so callers using the resolvers pick
+      // up the new outcome immediately. Each cache refresh builds fresh maps
+      // with populateSideNames and swaps them in.
       if (this.sideNames && spec.sideSpecs.length >= 2) {
+        const templates = this.templatesCache?.templates ?? [];
         this.sideNames.set(spec.outcome, [
           spec.sideSpecs[0].name,
           spec.sideSpecs[1].name,
         ]);
+        this.parsedSideNames?.set(
+          spec.outcome,
+          renderTemplateDisplay(spec, templates).sideNames,
+        );
       }
     }
     // All four variants change the catalog - drop the time-based caches so
@@ -249,17 +298,20 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
     this.metaCache = null;
   }
 
-  private populateSideNames(meta: HLOutcomeMeta): void {
-    if (this.sideNames) return;
-    this.sideNames = new Map();
+  private populateSideNames(
+    meta: HLOutcomeMeta,
+    templates: readonly HLOutcomeTemplate[],
+  ): void {
+    const names = new Map<number, [string, string]>();
+    const parsed = new Map<number, [string, string]>();
     for (const o of meta.outcomes) {
       if (o.sideSpecs.length >= 2) {
-        this.sideNames.set(o.outcome, [
-          o.sideSpecs[0].name,
-          o.sideSpecs[1].name,
-        ]);
+        names.set(o.outcome, [o.sideSpecs[0].name, o.sideSpecs[1].name]);
+        parsed.set(o.outcome, renderTemplateDisplay(o, templates).sideNames);
       }
     }
+    this.sideNames = names;
+    this.parsedSideNames = parsed;
   }
 
   async fetchEvents(
@@ -331,6 +383,10 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
       ? allMarkets.filter((m) => m.type === params.type)
       : allMarkets;
 
+    if (params.sortBy) {
+      filtered = await this.sortMarkets(filtered, params.sortBy);
+    }
+
     // groupBy
     if (params.groupBy === "type") {
       const grouped: MarketsByType = {};
@@ -358,6 +414,62 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
     return filtered.slice(offset, offset + limit);
   }
 
+  /** The template registry. Raw names are kept if it can't be fetched. */
+  private async loadTemplates(): Promise<HLOutcomeTemplate[]> {
+    const now = Date.now();
+    if (
+      this.templatesCache &&
+      now - this.templatesCache.timestamp < HIP4EventAdapter.CACHE_TTL_MS
+    ) {
+      return this.templatesCache.templates;
+    }
+    this.templatesInflight ??= this.fetchTemplates().finally(() => {
+      this.templatesInflight = null;
+    });
+    return this.templatesInflight;
+  }
+
+  private async fetchTemplates(): Promise<HLOutcomeTemplate[]> {
+    try {
+      const templates = await this.client.fetchOutcomeTemplates();
+      this.templatesCache = { templates, timestamp: Date.now() };
+      return templates;
+    } catch (err) {
+      this.client.log("warn", "outcomeTemplates request failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return this.templatesCache?.templates ?? [];
+    }
+  }
+
+  private async sortMarkets(
+    markets: HIP4Market[],
+    sortBy: NonNullable<FetchMarketsParams["sortBy"]>,
+  ): Promise<HIP4Market[]> {
+    const sorted = [...markets];
+    if (sortBy === "newest") {
+      return sorted.sort((a, b) => b.outcomeId - a.outcomeId);
+    }
+    if (sortBy === "expiry") {
+      /* Same tag handling as the rendered names: the template's keyword set
+         separates real keywords from a metadata tag's body. */
+      const templates = await this.loadTemplates();
+      const time = (m: HIP4Market) => {
+        const question = "rawQuestion" in m ? m.rawQuestion : null;
+        const declared = declaredKeywordsOf(m.raw.name, templates);
+        const at = readDeployedOutcome(m.raw, question, declared).eventAt;
+        return at ? at.getTime() : Number.POSITIVE_INFINITY;
+      };
+      return sorted.sort((a, b) => time(a) - time(b));
+    }
+    // 24h volume of both side coins.
+    const ctxs = await this.client.fetchSpotAssetCtxs();
+    const byCoin = new Map(ctxs.map((c) => [c.coin, Number(c.dayNtlVlm) || 0]));
+    const volume = (m: HIP4Market) =>
+      (byCoin.get(m.sides[0].coin) ?? 0) + (byCoin.get(m.sides[1].coin) ?? 0);
+    return sorted.sort((a, b) => volume(b) - volume(a));
+  }
+
   private async loadMarkets(): Promise<HIP4Market[]> {
     const now = Date.now();
     if (
@@ -367,14 +479,15 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
       return this.metaCache.markets;
     }
 
-    const [meta, mids] = await Promise.all([
+    const [meta, mids, templates] = await Promise.all([
       this.client.fetchOutcomeMeta(),
       this.client.fetchAllMids().catch(() => ({}) as Record<string, string>),
+      this.loadTemplates(),
     ]);
 
-    this.populateSideNames(meta);
+    this.populateSideNames(meta, templates);
 
-    const markets = classifyAllOutcomes(meta.outcomes, meta.questions);
+    const markets = classifyAllOutcomes(meta.outcomes, meta.questions, templates);
 
     this.metaCache = { meta, mids, markets, timestamp: now };
     return markets;
@@ -393,14 +506,15 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
       return this.cache.events;
     }
 
-    const [meta, mids] = await Promise.all([
+    const [meta, mids, templates] = await Promise.all([
       this.client.fetchOutcomeMeta(),
       this.client.fetchAllMids().catch(() => ({}) as Record<string, string>),
+      this.loadTemplates(),
     ]);
 
-    this.populateSideNames(meta);
+    this.populateSideNames(meta, templates);
 
-    const events = buildEventsFromMeta(meta);
+    const events = buildEventsFromMeta(meta, templates);
 
     for (const event of events) {
       for (const market of event.markets) {
@@ -422,7 +536,10 @@ export class HIP4EventAdapter implements PredictionEventAdapter {
 // Build event list from outcomeMeta
 // ---------------------------------------------------------------------------
 
-function buildEventsFromMeta(meta: HLOutcomeMeta): PredictionEvent[] {
+function buildEventsFromMeta(
+  meta: HLOutcomeMeta,
+  templates: readonly HLOutcomeTemplate[],
+): PredictionEvent[] {
   const outcomeMap = new Map<number, HLOutcome>();
   for (const o of meta.outcomes) {
     outcomeMap.set(o.outcome, o);
@@ -434,12 +551,12 @@ function buildEventsFromMeta(meta: HLOutcomeMeta): PredictionEvent[] {
   for (const q of meta.questions) {
     for (const id of q.namedOutcomes) claimedOutcomes.add(id);
     claimedOutcomes.add(q.fallbackOutcome);
-    events.push(mapQuestionToEvent(q, outcomeMap));
+    events.push(mapQuestionToEvent(q, outcomeMap, templates));
   }
 
   for (const o of meta.outcomes) {
     if (!claimedOutcomes.has(o.outcome)) {
-      events.push(mapStandaloneOutcomeToEvent(o));
+      events.push(mapStandaloneOutcomeToEvent(o, templates));
     }
   }
 

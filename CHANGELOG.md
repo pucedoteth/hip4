@@ -1,11 +1,190 @@
 # Changelog
 
+## 1.3.0
+
+### Minor Changes
+
+- [#16](https://github.com/Outcome-xyz/hip4/pull/16) [`2156984`](https://github.com/Outcome-xyz/hip4/commit/2156984ce427b6c75d1844775ae127fe0fb59525) Thanks [@kolima](https://github.com/kolima)! - `createHIP4Adapter` accepts an optional `minOrderNotional` to raise the client-side order-notional
+  floor above the protocol `MIN_NOTIONAL` ($1). `getMinShares` gains an optional second parameter for
+  the same purpose. `MIN_NOTIONAL` itself is unchanged — this is an additive, backward-compatible
+  config option, not a change to the protocol floor.
+
+- [#20](https://github.com/Outcome-xyz/hip4/pull/20) [`62daf36`](https://github.com/Outcome-xyz/hip4/commit/62daf36d57282477dc3fa2953589595ca7e410d1) Thanks [@dennisfurrer](https://github.com/dennisfurrer)! - `fetchPositions` now reports `currentPrice` and `unrealizedPnl` for outcome positions. Spot balances name
+  side coins `+<coin>` while mids use `#<coin>`, so the price lookup found nothing and returned "0".
+  
+  Limit order prices are rounded to 5 decimals, the outcome price tick, in `placeOrder` and `placeOrders`. Before,
+  prices below 0.1 could be sent with 6 or more decimals (0.012345 stayed 0.012345). `formatOutcomePrice` is
+  exported for the same rounding in your own code.
+  
+  `fetchMarkets` now applies `sortBy`. It was ignored before. `"newest"` puts the highest outcome id first,
+  `"expiry"` the soonest event time, and `"volume"` the highest 24h volume (one extra `spotMetaAndAssetCtxs`
+  request). Without `sortBy` the order is unchanged.
+  
+  Names from `fetchMarkets`, `fetchEvents`, `fetchEvent`, `fetchPrice`, `subscribePrice`, `fetchPositions` and
+  `outcomeCreated` updates stay the names sent on chain, as before (for example "template:priceTouch"). The names
+  rendered from the `outcomeTemplates` registry, for example "BTC touches 90000 by Nov 1, 00:00 UTC", are in new
+  optional fields: `parsedName`, `sides[].parsedName`, `parsedQuestionName`, `parsedTitle`, `parsedQuestion`,
+  `parsedEventTitle`, `parsedMarketQuestion`, `parsedOutcomeName` and the `parsedName` of each price outcome. The
+  fallback outcome of a template question is rendered as "Other". If the registry cannot be fetched, the `template:`
+  prefix is still removed from plain names such as "template:Yes" in the parsed fields.
+  `HIP4EventAdapter.getParsedSideNameResolver()` returns the rendered side names, while `getSideNameResolver()`
+  keeps returning the wire names. Refreshing the market or event cache now makes one extra `outcomeTemplates`
+  request (cached for 30 seconds and shared by both). `classifyOutcome` and `classifyAllOutcomes` take the
+  registry as an optional last argument. New `HIP4Client.fetchSpotAssetCtxs()`.
+  
+  When Hyperliquid rejects a whole `placeOrder` or `placeOrders` request, `error` stays "Exchange returned non-ok
+  status". Hyperliquid's own message, for example "User or API Wallet 0x... does not exist.", is in the new
+  optional `raw` field of the result.
+  
+  `parseInstanceDescription`, `readDeployedOutcome` and `readDeployedOutcomes` cut the `metadata=` routing tag
+  deployers glue onto a value, so `threshold:65000 metadata=category:economics` reads as `65000`. They take an
+  optional set of declared keyword names (`declared`) to also drop the tag body's segments.
+
+### Patch Changes
+
+- [#23](https://github.com/Outcome-xyz/hip4/pull/23) [`fd09927`](https://github.com/Outcome-xyz/hip4/commit/fd099278ee41e5da0576f7fa369c6331aea5d70e) Thanks [@dennisfurrer](https://github.com/dennisfurrer)! - Rendered names and Hyperliquid's rejection message are available in new optional fields, and the existing fields
+  keep what they returned in 1.2.0-beta.2.
+  
+  If you installed 1.3.0-beta.0 (it was published to npm under `latest`):
+  
+  - Read rendered template names from `parsedName`, `sides[].parsedName`, `parsedQuestionName`, `parsedTitle`,
+    `parsedQuestion`, `parsedEventTitle`, `parsedMarketQuestion` and `parsedOutcomeName`, and the `parsedName` of
+    price outcomes. `name`, `sides[].name`, `questionName`, `title`, `question`, `eventTitle`, `marketQuestion`
+    and `outcomeName` are the names sent on chain again, as in 1.2.0-beta.2. Use
+    `HIP4EventAdapter.getParsedSideNameResolver()` for rendered side names.
+  - When Hyperliquid rejects a whole `placeOrder` or `placeOrders` request, `error` is "Exchange returned non-ok
+    status" again. Hyperliquid's message is in the new `raw` field.
+  
+  Still fixed from 1.3.0-beta.0: limit prices are rounded to 5 decimals, `fetchPositions` prices outcome
+  positions, the `metadata=` tag is cut from deployed outcome descriptions, and `fetchMarkets` honours `sortBy`.
+
+- [#25](https://github.com/Outcome-xyz/hip4/pull/25) [`9c6c158`](https://github.com/Outcome-xyz/hip4/commit/9c6c1587ee98fd5796ffef45f31990568e1cc62f) Thanks [@kolima](https://github.com/kolima)! - `readDeployedOutcomes` now accepts the same optional `declared` keyword set as `readDeployedOutcome` and
+  `parseInstanceDescription`, and `settlementStatus` accepts it for raw outcomes. Without it the behaviour is
+  unchanged: a glued `metadata=` tag is cut from values. The 1.3.0 notes said `readDeployedOutcomes` took this set
+  before it did.
+  
+  `fetchMarkets` with `sortBy: "expiry"` now handles metadata tags the same way as the rendered market names, using
+  the template's declared keywords, so the sort order and the displayed event time agree. A fallback outcome whose
+  plain name merely starts with `template` is no longer renamed "Other"; only `template:` names are.
+
+- [#22](https://github.com/Outcome-xyz/hip4/pull/22) [`14130a4`](https://github.com/Outcome-xyz/hip4/commit/14130a4caba43c4ed838a2c6466fd31d8b3c5545) Thanks [@kolima](https://github.com/kolima)! - hip4 now ships stable versions. Releases are plain `X.Y.Z` (no `-beta` suffix) and are published to the npm
+  `latest` dist-tag, so `npm install @outcome.xyz/hip4` resolves to the newest release without a tag. The
+  `beta` dist-tag is no longer updated; it keeps pointing at `1.3.0-beta.0`.
+  
+  Releases are still staged through npm trusted publishing and go live only after a maintainer approves them with
+  2FA. Once a release is live, its git tag (`vX.Y.Z`) and GitHub Release (with these notes) are created
+  automatically.
+
+- [#12](https://github.com/Outcome-xyz/hip4/pull/12) [`ae1dcbc`](https://github.com/Outcome-xyz/hip4/commit/ae1dcbc0a8b8863dbc90a029017f997da9b34f99) Thanks [@kolima](https://github.com/kolima)! - CI gate added. `.github/workflows/ci.yml` now runs typecheck, build, and the test suite (Node 20 and 24) on every
+  pull request and on push to `main`. No change to published behavior. Node pinned to `24` via `.nvmrc`/`packageManager`;
+  the test matrix omits Node 18 because `vitest@4` requires Node `^20.0.0 || ^22.0.0 || >=24.0.0`.
+
+- [#18](https://github.com/Outcome-xyz/hip4/pull/18) [`3d668f1`](https://github.com/Outcome-xyz/hip4/commit/3d668f13fc913b642d852786211fddd65fc95c37) Thanks [@kolima](https://github.com/kolima)! - `HIP4Client.subscribe`: unsubscribing before the WebSocket has opened now removes the queued
+  subscribe message instead of leaving it in the queue. Previously the cancelled subscription was
+  still sent when the socket opened, with no unsubscribe to follow, so its frames kept arriving on the
+  shared response channel (for example a coarse `l2Book` with `nSigFigs` overwriting a full-precision
+  book subscribed right after it). Identical subscribe messages are also no longer queued twice, so a
+  socket that drops before opening and reconnects sends each subscription once.
+
+## 1.3.0-beta.0
+
+### Minor Changes
+
+- [#20](https://github.com/Outcome-xyz/hip4/pull/20) [`62daf36`](https://github.com/Outcome-xyz/hip4/commit/62daf36d57282477dc3fa2953589595ca7e410d1) Thanks [@dennisfurrer](https://github.com/dennisfurrer)! - `placeOrder` and `placeOrders` return Hyperliquid's message when the exchange rejects the whole request,
+  for example "User or API Wallet 0x... does not exist.", instead of "Exchange returned non-ok status".
+  
+  Limit order prices are rounded to 5 decimals, the outcome price tick. Before, prices below 0.1 could be
+  sent with 6 or more decimals (0.012345 stayed 0.012345). `formatOutcomePrice` is exported for the same
+  rounding in your own code.
+  
+  `fetchMarkets` now applies `sortBy`. It was ignored before. `"newest"` puts the highest outcome id first,
+  `"expiry"` the soonest event time, and `"volume"` the highest 24h volume (one extra `spotMetaAndAssetCtxs`
+  request). Without `sortBy` the order is unchanged.
+  
+  Template markets are named from the `outcomeTemplates` registry, for example "BTC touches 90000 by Nov 1,
+  00:00 UTC" instead of "template:priceTouch". This applies consistently to `fetchMarkets`, `fetchEvents`,
+  `fetchEvent`, `fetchPositions` side names and `outcomeCreated` updates. The fallback outcome of a template
+  question is named "Other". If the registry cannot be fetched, the `template:` prefix is still removed from
+  plain names such as "template:Yes". Refreshing the market or event cache now makes one extra
+  `outcomeTemplates` request (cached for 30 seconds and shared by both). `classifyOutcome` and
+  `classifyAllOutcomes` take the registry as an optional last argument. New `HIP4Client.fetchSpotAssetCtxs()`.
+  
+  `fetchPositions` now reports `currentPrice` and `unrealizedPnl` for outcome positions. Spot balances name
+  side coins `+<coin>` while mids use `#<coin>`, so the price lookup found nothing and returned "0".
+  
+  `parseInstanceDescription` cuts the `metadata=` routing tag deployers glue onto a value and takes an optional
+  set of declared keyword names to drop tag-body segments.
+
+## 1.2.0-beta.2
+
+### Patch Changes
+
+- [#18](https://github.com/Outcome-xyz/hip4/pull/18) [`3d668f1`](https://github.com/Outcome-xyz/hip4/commit/3d668f13fc913b642d852786211fddd65fc95c37) Thanks [@kolima](https://github.com/kolima)! - `HIP4Client.subscribe`: unsubscribing before the WebSocket has opened now removes the queued
+  subscribe message instead of leaving it in the queue. Previously the cancelled subscription was
+  still sent when the socket opened, with no unsubscribe to follow, so its frames kept arriving on the
+  shared response channel (for example a coarse `l2Book` with `nSigFigs` overwriting a full-precision
+  book subscribed right after it). Identical subscribe messages are also no longer queued twice, so a
+  socket that drops before opening and reconnects sends each subscription once.
+
+## 1.2.0-beta.1
+
+### Minor Changes
+
+- [#16](https://github.com/Outcome-xyz/hip4/pull/16) [`2156984`](https://github.com/Outcome-xyz/hip4/commit/2156984ce427b6c75d1844775ae127fe0fb59525) Thanks [@kolima](https://github.com/kolima)! - `createHIP4Adapter` accepts an optional `minOrderNotional` to raise the client-side order-notional
+  floor above the protocol `MIN_NOTIONAL` ($1). `getMinShares` gains an optional second parameter for
+  the same purpose. `MIN_NOTIONAL` itself is unchanged — this is an additive, backward-compatible
+  config option, not a change to the protocol floor.
+
+## 1.2.0-beta.0
+
+### Patch Changes
+
+- [#12](https://github.com/Outcome-xyz/hip4/pull/12) [`ae1dcbc`](https://github.com/Outcome-xyz/hip4/commit/ae1dcbc0a8b8863dbc90a029017f997da9b34f99) Thanks [@kolima](https://github.com/kolima)! - Releases are now automated with Changesets. Every PR that should ship a release adds a `.changeset/*.md` file
+  (`pnpm changeset`); merging to `main` opens or updates a "Version Packages" PR, and merging that PR bumps the
+  version and regenerates this changelog. This replaces hand-editing `CHANGELOG.md`. hip4 stays on the `beta`
+  prerelease channel (versions are `X.Y.Z-beta.N`, one dot-number higher than the previous bare `X.Y.Z-beta`
+  tags — still valid semver, just a visible format change) — no change to which npm dist-tag consumers install
+  from.
+  
+  Publishing itself is no longer automatic end to end, and that's deliberate. It uses npm's OIDC **trusted
+  publishing** in **staged** mode: no npm token is stored anywhere, CI stages the release non-interactively, and
+  it only goes live once a maintainer approves it with 2FA (via `npm stage approve` or npmjs.com) — even a fully
+  compromised CI run can stage a package but never publish it unattended. A **git tag** for the release is
+  created only after that approval, on the next push to `main` that finds the version already live (or
+  immediately, if the approving maintainer runs `pnpm changeset git-tag && git push --tags` themselves right
+  after approving) — not automatically the moment the Version Packages PR is merged. Each approved publish
+  additionally carries a signed provenance attestation — `npm view @outcome.xyz/hip4 --json` shows a
+  `dist.attestations` entry, and the npmjs.com package page's Provenance panel shows the publish identity as
+  `GitHub Actions`, not a personal account.
+
+- [#12](https://github.com/Outcome-xyz/hip4/pull/12) [`ae1dcbc`](https://github.com/Outcome-xyz/hip4/commit/ae1dcbc0a8b8863dbc90a029017f997da9b34f99) Thanks [@kolima](https://github.com/kolima)! - CI gate added. `.github/workflows/ci.yml` now runs typecheck, build, and the test suite (Node 20 and 24) on every
+  pull request and on push to `main`. No change to published behavior. Node pinned to `24` via `.nvmrc`/`packageManager`;
+  the test matrix omits Node 18 because `vitest@4` requires Node `^20.0.0 || ^22.0.0 || >=24.0.0`.
+
 All notable changes to `@outcome.xyz/hip4` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+As of the release that follows `1.2.0-beta`, new entries are generated by `changeset version` from
+`.changeset/*.md` files (added per PR via `pnpm changeset`) instead of hand-edited — see `.changeset/README.md`.
+There is no longer an `## [Unreleased]` heading: Changesets prepends a concrete version section here directly.
+
+## [1.2.0-beta] - 2026-09-05
+
+### Changed
+
+- **`MIN_NOTIONAL` reduced from `10` to `1`.** The Hyperliquid network upgrade
+  lowers the minimum order notional for HIP-4 outcome orders to $1. This
+  changes the client-side rejection in `buildOrderWire` and, through it, every
+  floor a consumer derives from the constant.
+  - `getMinShares(markPx)` now returns roughly a tenth of its previous value at
+    any given mark, since it is `ceil(MIN_NOTIONAL / cheaper-side price)`.
+  - **Consume this version only once the network upgrade is live.** Bumping
+    ahead of the chain lets the SDK build order wires the exchange still
+    rejects, turning a clean client-side error into an exchange rejection.
+
+## [1.1.0-beta] - 2026-09-02
 
 ### Added
 
@@ -16,12 +195,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [docs/DEPLOYER.md](docs/DEPLOYER.md).
   - `hip4.deployer` on the adapter, plus a standalone `HIP4DeployerAdapter`.
   - Action builders: `buildRegisterStandaloneOutcomeAction`,
-    `buildRegisterQuestionAction`, `buildSettleOutcomeAction`,
+    `buildRegisterQuestionAction`,
+    `buildRegisterAndAssociateNamedOutcomeAction`, `buildSettleOutcomeAction`,
     `buildSettleQuestionAction`, `buildActivateDeployerAction`,
-    `buildApproveAgentAction`, `buildConvertToMultiSigUserAction`,
-    `buildUserSetAbstractionAction`, `buildTokenDelegateAction`,
-    `buildCDepositAction`, `buildCWithdrawAction`. All pure, all producing the
-    exact key order the exchange hashes.
+    `buildSetSubDeployersAction`, `buildApproveAgentAction`,
+    `buildConvertToMultiSigUserAction`, `buildUserSetAbstractionAction`,
+    `buildTokenDelegateAction`, `buildCDepositAction`, `buildCWithdrawAction`.
+    All pure, all producing the exact key order the exchange hashes, all
+    covered by parity vectors. Their adapter counterparts include
+    `deployer.registerAndAssociateNamedOutcome` and `deployer.setSubDeployers`.
   - Multi-sig: `signMultiSigInnerL1Action`,
     `signMultiSigInnerUserSignedAction`, `buildMultiSigAction`,
     `signMultiSigEnvelope`, `multiSigActionHash`, `withMultiSigTypes`. Envelope
@@ -42,6 +224,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     keeps a template's event time separate from its resolution deadline.
     Covers the `template:*` markets that `parseDescription` does not, which
     on live testnet is 237 outcomes against 5.
+  - `readDeployedOutcomes` and `questionByOutcome`. A question's outcomes carry
+    no times of their own, so they inherit the parent question's; without this
+    every named outcome read as having no deadline.
   - Settlement tracking: `settlementQueue`, `settlementStatus`,
     `deployer.fetchSettlementQueue(master, window)`. A template's own
     `resolutionDeadline` is used where it publishes one; otherwise the caller
@@ -55,18 +240,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with two inner signers, and it fails as `Invalid multi-sig outer signer`.
     Measured on testnet 19 Aug 2026: 0 of 2 accepted zero-padded, 6 of 6
     minimal, 24 of 24 after the fix.
-  - `readDeployedOutcomes` and `questionByOutcome`. A question's outcomes carry
-    no times of their own, so they inherit the parent question's; without this
-    every named outcome read as having no deadline.
+  - Types and constants: `MAX_QUESTION_OUTCOMES`, `HLOutcomeDeployAction`,
+    `HLSubDeployerVariant`, `HLSubDeployerEntry`.
 
-### Fixed
+- **`outcomeRewards` module.** Programme-wide totals, one wallet's
+  earnings, finalized reward periods, and a leaderboard, from the public
+  Outcome liquidity-rewards payouts API (a separate service from Monarch -
+  see [docs/OUTCOME-REWARDS.md](docs/OUTCOME-REWARDS.md)):
+  - `outcomeRewards.programme()` - paid/pending/awarded USDC totals, plus
+    `last24h` (rolling trailing-24-hour `paidUsdc` / `payments`) and `today`
+    (the same since the current UTC day began, with a distinct-wallet count).
+  - `outcomeRewards.wallet(address)` - one wallet's totals and reward rows.
+  - `outcomeRewards.periods({ limit })` - every finalized reward period.
+  - `outcomeRewards.leaderboard({ limit })` - wallets ranked by USDC paid.
+  - `OUTCOME_REWARDS_CONFIG`, `OutcomeRewardsError`, and typed results
+    (including `OutcomeRewardsWindowTotals` and `OutcomeRewardsTodayTotals`)
+    exported from the root entry point.
+  - Example: `examples/outcome-rewards-get-programme.ts`.
 
-- `./types` now points at the declaration files tsup emits. The old paths named
-  a directory that was never built. TypeScript fell through to the `default`
-  condition and resolved types anyway, so no consumer was broken; the config
-  was stale rather than wrong.
-- `publishConfig.tag` is `alpha`, so publishing a prerelease cannot move the
-  `latest` dist-tag by default.
 - `client.fetchOutcomeTemplates()` - the live template registry.
 - `client.fetchMultiSigSigners(user)` - authorized users and threshold, or
   `null` for an account that has not been converted.
@@ -77,6 +268,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `outcomeMeta` now types `deployers` and `feeScale`, and an outcome its
   `venue` and `deployerFeeScale`. `userRole` types the `data.user` field an
   agent role carries.
+
+### Changed
+
+- **Deployer actions follow the published HIP-4 reference (breaking within
+  the experimental surface).** Deploy and settle actions are now
+  `{ type: "outcomeDeploy", venue, operation }` instead of
+  `{ type: "spotDeploy", outcome }`; testnet rejects the old shape. Every
+  register builder and `RegisterStandaloneOutcomeParams` /
+  `RegisterQuestionParams` / `SettleQuestionParams` take a required `venue`;
+  `buildSettleOutcomeAction(venue, outcome, fraction)`. The adapter's
+  `settleOutcome` / `settleQuestion` read the venue from `outcomeMeta`.
+  `buildDeactivateDeployerAction` emits `{ deactivate: null }`. The `details`
+  parameter on settlements is gone (the exchange requires it empty).
+  `venueNameError` refuses `spot`; questions are capped at 100 named
+  outcomes. `buildConvertToMultiSigUserAction` accepts an empty signer set
+  for converting back to a normal user; the threshold sent with it (`0`) is
+  not published and has not been measured live.
+
+### Removed
+
+- **`liquidityRewards` module (breaking).** Monarch has permanently retired
+  the World Cup 2026 campaign API it depended on
+  (`/marina/campaigns/world-cup-2026/*` now returns
+  `410 Gone` / `WORLD_CUP_2026_API_RETIRED` on every route, for any date, not
+  just the current one) - season `s1` was the only registered season, so the
+  whole feature is non-functional. Removed: `liquidityRewards`,
+  `LIQUIDITY_REWARDS_CONFIG`, `LiquidityRewardsError`, and every
+  `LiquidityRewards*` type. `docs/LIQUIDITY-REWARDS.md` and
+  `examples/wc-liq-rewards-s1-get-markets.ts` are gone with it. The
+  `outcomeRewards` module above is its replacement, against a different API.
+
+### Fixed
+
+- `./types` now points at the declaration files tsup emits. The old paths named
+  a directory that was never built. TypeScript fell through to the `default`
+  condition and resolved types anyway, so no consumer was broken; the config
+  was stale rather than wrong.
+- `publishConfig.tag` is `beta`, so a plain `npm publish` cannot move the
+  `latest` dist-tag by default.
 
 ## [1.0.3-beta] - 2026-07-06
 
@@ -144,6 +374,7 @@ Initial public beta release.
 - Node 18+ required.
 - React bindings live in a separate package (`@outcome.xyz/hip4-react`).
 
+[1.1.0-beta]: https://github.com/Outcome-xyz/hip4/releases/tag/v1.1.0-beta
 [1.0.3-beta]: https://github.com/Outcome-xyz/hip4/releases/tag/v1.0.3-beta
 [1.0.2-beta]: https://github.com/Outcome-xyz/hip4/releases/tag/v1.0.2-beta
 [1.0.1-beta]: https://github.com/Outcome-xyz/hip4/releases/tag/v1.0.1-beta

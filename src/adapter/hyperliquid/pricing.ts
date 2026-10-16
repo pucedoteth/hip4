@@ -14,7 +14,11 @@ import { toDecimal, toNum, div, mul, pow, abs } from "../../lib/precision/primit
 import { clamp, ceilToStep } from "../../lib/precision/primitives";
 import { formatSigFig, fixed } from "../../lib/precision/io";
 
-export const MIN_NOTIONAL = 10;
+// Minimum order notional in USD, enforced by the exchange on HIP-4 outcome
+// orders. Reduced from $10 to $1 by the Hyperliquid network upgrade; consumers
+// derive their own floors from this rather than restating it, so a version bump
+// is what moves them.
+export const MIN_NOTIONAL = 1;
 
 // ---------------------------------------------------------------------------
 // Tick size
@@ -50,20 +54,41 @@ export function formatPrice(price: number): string {
   return s;
 }
 
+const OUTCOME_PRICE_DECIMALS = 5;
+
+/**
+ * Format a HIP-4 outcome price for the order wire. The exchange accepts at
+ * most 5 significant figures and at most 5 decimals. For prices below 1 that
+ * means rounding to 5 decimals; `formatPrice` alone can produce more below 0.1.
+ */
+export function formatOutcomePrice(price: number | string): string {
+  const d = toDecimal(price);
+  if (d.isZero() || !d.isPositive()) return "0";
+  const rounded = d.lt(1)
+    ? d.toFixed(OUTCOME_PRICE_DECIMALS)
+    : d.toSignificantDigits(5).toString();
+  return stripZeros(rounded);
+}
+
 export function stripZeros(s: string): string {
   if (!s.includes(".")) return s;
-  return s.replace(/\.?0+$/, "");
+  // A loop, not /\.?0+$/, which takes quadratic time on long runs of zeros.
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "0") end--;
+  if (end === s.length) return s;
+  if (s[end - 1] === ".") end--;
+  return s.slice(0, end);
 }
 
 // ---------------------------------------------------------------------------
 // Minimum order size
 // ---------------------------------------------------------------------------
 
-export function getMinShares(markPx: number): number {
+export function getMinShares(markPx: number, minNotional: number = MIN_NOTIONAL): number {
   const effective = toNum(clamp(
     toDecimal(Math.min(markPx, 1 - markPx)).toString(),
     "0.01",
     "1",
   ));
-  return Math.ceil(MIN_NOTIONAL / effective);
+  return Math.ceil(minNotional / effective);
 }
